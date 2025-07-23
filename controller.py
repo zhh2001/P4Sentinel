@@ -1,3 +1,4 @@
+import csv
 import logging
 import warnings
 
@@ -13,6 +14,7 @@ STRATEGY_DIRECT = 1
 STRATEGY_WARM_UP = 2
 
 SWITCH_IP = '10.120.21.77'
+
 
 def main():
     topo = load_topo(json_path='./topology.json')
@@ -38,14 +40,16 @@ def main():
     h2_ip = topo.get_host_ip('h2')
     h2_id = 1
     h2_strategy = STRATEGY_WARM_UP
-    h2_threshold = 100
-    h2_warm_up_period_ms = 5000000
+    h2_threshold = 800
+    h2_warm_up_period_ms = 1500000
     h2_warm_up_factor = 2
     grpc_controller.table_add('rule_tbl', 'flow_control', [h2_ip],
-                              [str(h2_id), str(h2_strategy), '1', str(h2_threshold), str(h2_warm_up_period_ms), str(h2_warm_up_factor), '1000000'])
+                              [str(h2_id), str(h2_strategy), '1', str(h2_threshold), str(h2_warm_up_period_ms),
+                               str(h2_warm_up_factor), '1000000'])
     warm_up_ms_per_threshold = h2_warm_up_period_ms // (h2_threshold - (h2_threshold >> h2_warm_up_factor))
     thrift_controller.register_write('warm_up_ms_per_threshold', h2_id, int(warm_up_ms_per_threshold))
-    # print(thrift_controller.register_read('warm_up_ms_per_threshold', h2_id))
+
+    print(thrift_controller.register_read('warm_up_ms_per_threshold', h2_id))
 
     def listen_count():
         digest_name = 'reported_data'
@@ -57,19 +61,26 @@ def main():
             counter_data = (int.from_bytes(counter.bitstring, 'big', signed=False)
                             for counter in counter_data)
             passed_count, blocked_count = counter_data
-            logging.info(f"【Direct】接受数量：{passed_count}，拒接数量{blocked_count}")
+            logging.info(f"【Direct】接受数量：{passed_count}，拒接数量：{blocked_count}")
 
     def listen_threshold():
         digest_name = 'warm_up_data'
         if grpc_controller.digest_get_conf(digest_name) is None:
             grpc_controller.digest_enable(digest_name)
+        f = open(f'threshold-{h2_warm_up_period_ms}.csv', mode='w', encoding='utf-8', newline='')
+        writer = csv.writer(f)
+        writer.writerow(('timestamp', 'threshold'))
         while True:
             digest = grpc_controller.get_digest_list()
             warm_up_data = digest.data[0].struct.members
             warm_up_data = (int.from_bytes(counter.bitstring, 'big', signed=False)
                             for counter in warm_up_data)
             threshold, passed_count, blocked_count = warm_up_data
-            logging.info(f"【WarmUp】接受数量：{passed_count}，拒接数量{blocked_count}")
+            logging.info(f"【WarmUp】接受数量：{passed_count}，拒接数量：{blocked_count}")
+            if threshold <= h2_threshold:
+                writer.writerow((digest.timestamp, threshold))
+                if threshold == h2_threshold:
+                    f.close()
 
     if h2_strategy == STRATEGY_DIRECT:
         listen_count()
